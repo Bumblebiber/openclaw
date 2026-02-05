@@ -101,9 +101,11 @@ describe("renderTelegramHtmlText - file reference wrapping", () => {
     expect(result).toContain("<code>README.md</code>");
   });
 
-  it("wraps file references in HTML mode", () => {
+  it("does not wrap in HTML mode (trusts caller markup)", () => {
+    // textMode: "html" should pass through unchanged - caller owns the markup
     const result = renderTelegramHtmlText("Check README.md", { textMode: "html" });
-    expect(result).toContain("<code>README.md</code>");
+    expect(result).toBe("Check README.md");
+    expect(result).not.toContain("<code>");
   });
 
   it("does not double-wrap already code-formatted content", () => {
@@ -323,5 +325,20 @@ describe("edge cases", () => {
     const result = wrapFileReferencesInHtml(input);
     // Only x.md gets wrapped, the rest passes through
     expect(result).toBe("<code>x.md</code></code><b>bold</b>");
+  });
+
+  it("does not wrap orphaned TLD inside href attributes", () => {
+    // D.md inside href should NOT be wrapped
+    const input = '<a href="http://example.com/R&D.md">link</a>';
+    const result = wrapFileReferencesInHtml(input);
+    // href should be untouched
+    expect(result).toBe(input);
+    expect(result).not.toContain("<code>D.md</code>");
+  });
+
+  it("does not wrap orphaned TLD inside any HTML attribute", () => {
+    const input = '<img src="logo/R&D.md" alt="R&D.md">';
+    const result = wrapFileReferencesInHtml(input);
+    expect(result).toBe(input);
   });
 });

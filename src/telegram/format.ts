@@ -222,10 +222,16 @@ export function wrapFileReferencesInHtml(html: string): string {
     `([^a-zA-Z0-9]|^)([A-Za-z]\\.(?:${extensionsPattern}))(?=[^a-zA-Z0-9/]|$)`,
     "g",
   );
-  result = result.replace(orphanedTldPattern, (m, prefix, tld) => {
-    // Skip if already wrapped in a tag (check for < before or > after in context)
+  result = result.replace(orphanedTldPattern, (m, prefix, tld, offset) => {
+    // Skip if prefix is > (right after a tag close)
     if (prefix === ">") {
       return m;
+    }
+    // Skip if we're inside an HTML tag (between < and >)
+    const lastOpen = result.lastIndexOf("<", offset);
+    const lastClose = result.lastIndexOf(">", offset);
+    if (lastOpen > lastClose) {
+      return m; // Inside a tag
     }
     return `${prefix}<code>${escapeHtml(tld)}</code>`;
   });
@@ -239,8 +245,8 @@ export function renderTelegramHtmlText(
 ): string {
   const textMode = options.textMode ?? "markdown";
   if (textMode === "html") {
-    // For HTML mode, still wrap file references in the HTML
-    return wrapFileReferencesInHtml(text);
+    // For HTML mode, trust caller markup - don't modify
+    return text;
   }
   // markdownToTelegramHtml already wraps file references by default
   return markdownToTelegramHtml(text, { tableMode: options.tableMode });
