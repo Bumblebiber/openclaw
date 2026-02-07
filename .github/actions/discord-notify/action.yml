@@ -52,7 +52,7 @@ runs:
           --argjson color "${{ inputs.color }}" \
           --argjson fields '${{ inputs.fields }}' \
           --arg timestamp "$TIMESTAMP" \
-          --argjson add_timestamp "${{ inputs.timestamp }}" \
+          --argjson add_timestamp "${{ inputs.timestamp == 'true' }}" \
           '{
             username: $username,
             avatar_url: $avatar_url,

@@ -119,7 +119,7 @@ jobs:
   run-tests:
     name: Run Tests
     needs: [determine-target, ensure-target-branch]
-    if: ${{ needs.determine-target.outputs.should_promote == 'true' && !inputs.skip_tests }}
+    if: ${{ needs.determine-target.outputs.should_promote == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.skip_tests) }}
     uses: ./.github/workflows/testing-strategy.yml
     with:
       test_stage: ${{ needs.determine-target.outputs.test_stage }}
@@ -133,7 +133,7 @@ jobs:
     if: |
       !cancelled() &&
       needs.determine-target.outputs.should_promote == 'true' &&
-      (needs.run-tests.outputs.test_status == 'passed' || inputs.skip_tests)
+      (needs.run-tests.outputs.test_status == 'passed' || (github.event_name == 'workflow_dispatch' && inputs.skip_tests))
     runs-on: ubuntu-latest
     outputs:
       pr_number: ${{ steps.output-pr.outputs.pull-request-number }}

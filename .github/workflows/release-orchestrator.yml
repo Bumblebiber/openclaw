@@ -111,7 +111,12 @@ jobs:
               ;;
           esac
 
-          LATEST_TAG=$(git tag -l "$PATTERN" --sort=-v:refname | head -1)
+          # Filter out prerelease tags for stable (glob * matches -alpha/-beta suffixes)
+          if [ "${{ needs.determine-params.outputs.release_type }}" = "stable" ]; then
+            LATEST_TAG=$(git tag -l "$PATTERN" --sort=-v:refname | grep -v -E '-(alpha|beta)\.' | head -1)
+          else
+            LATEST_TAG=$(git tag -l "$PATTERN" --sort=-v:refname | head -1)
+          fi
 
           if [ -z "$LATEST_TAG" ]; then
             # No previous tag, use all commits
