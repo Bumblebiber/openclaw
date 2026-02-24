@@ -155,6 +155,15 @@ describe("abort detection", () => {
       "止めて",
       "रुको",
       "توقف",
+      "стоп",
+      "остановись",
+      "останови",
+      "остановить",
+      "прекрати",
+      "halt",
+      "anhalten",
+      "aufhören",
+      "hoer auf",
       "stopp",
       "pare",
     ];
@@ -175,6 +184,8 @@ describe("abort detection", () => {
     expect(isAbortRequestText("stop action")).toBe(true);
     expect(isAbortRequestText("stop openclaw!!!")).toBe(true);
     expect(isAbortRequestText("やめて")).toBe(true);
+    expect(isAbortRequestText("остановись")).toBe(true);
+    expect(isAbortRequestText("halt")).toBe(true);
     expect(isAbortRequestText("stopp")).toBe(true);
     expect(isAbortRequestText("pare")).toBe(true);
     expect(isAbortRequestText(" توقف ")).toBe(true);
