@@ -33,16 +33,21 @@ import { getShellConfig, sanitizeBinaryOutput } from "./shell-utils.js";
 // are not propagated into non-sandboxed executions.
 export function sanitizeHostBaseEnv(env: Record<string, string>): Record<string, string> {
   const sanitized: Record<string, string> = {};
+  let hostPath: string | undefined;
   for (const [key, value] of Object.entries(env)) {
     const upperKey = key.toUpperCase();
     if (upperKey === "PATH") {
-      sanitized[key] = value;
+      // Canonicalize PATH casing so downstream PATH merges always hit one key.
+      hostPath ??= value;
       continue;
     }
     if (isDangerousHostEnvVarName(upperKey)) {
       continue;
     }
     sanitized[key] = value;
+  }
+  if (hostPath !== undefined) {
+    sanitized.PATH = hostPath;
   }
   return sanitized;
 }

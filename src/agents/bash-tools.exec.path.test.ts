@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecApprovalsResolved } from "../infra/exec-approvals.js";
 import { captureEnv } from "../test-utils/env.js";
+import { sanitizeHostBaseEnv } from "./bash-tools.exec-runtime.js";
 import { sanitizeBinaryOutput } from "./shell-utils.js";
 
 const isWin = process.platform === "win32";
@@ -155,6 +156,28 @@ describe("exec PATH login shell merge", () => {
 });
 
 describe("exec host env validation", () => {
+  it("sanitizes inherited host env without mutating source object", () => {
+    const inherited = {
+      PATH: "/usr/bin",
+      Path: "/should-not-win",
+      SAFE_KEY: "ok",
+      LD_PRELOAD: "bad",
+      sslkeylogfile: "/tmp/keys.log",
+    };
+    const sanitized = sanitizeHostBaseEnv(inherited);
+    expect(sanitized).toEqual({
+      PATH: "/usr/bin",
+      SAFE_KEY: "ok",
+    });
+    expect(inherited).toEqual({
+      PATH: "/usr/bin",
+      Path: "/should-not-win",
+      SAFE_KEY: "ok",
+      LD_PRELOAD: "bad",
+      sslkeylogfile: "/tmp/keys.log",
+    });
+  });
+
   it("blocks LD_/DYLD_ env vars on host execution", async () => {
     const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
 
