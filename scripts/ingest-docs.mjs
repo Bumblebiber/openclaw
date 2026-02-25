@@ -1,31 +1,116 @@
 #!/usr/bin/env node
 /**
- * Ingest OpenClaw docs/*.md into OPENCLAW.hmem using HmemStore.
+ * Ingest curated OpenClaw docs into OPENCLAW.hmem.
  *
- * Mapping:
- *   - Each .md file → one root entry (prefix O)
- *   - Frontmatter title → hmem title
- *   - Frontmatter summary → L1 text
- *   - ## headings → L2 children
- *   - ### headings → L3 children
- *   - #### headings → L4 children
- *   - ```code blocks``` → child node of current section (language as title hint)
- *   - Prose between headings → content of that node
+ * Two prefixes:
+ *   W — Workspace bootstrap files (SOUL.md, TOOLS.md, USER.md, etc.)
+ *   O — Curated documentation (AGENTS.md reference chain + core concepts)
  *
  * Usage: node scripts/ingest-docs.mjs [--dry-run]
  */
 
 import fs from "node:fs";
 import path from "node:path";
-// Use local hmem source directly (sibling directory)
 import { HmemStore, loadHmemConfig } from "../../hmem/dist/index.js";
 
-const DOCS_DIR = path.resolve(import.meta.dirname, "..", "docs");
-const HMEM_PATH = path.resolve(import.meta.dirname, "..", "OPENCLAW.hmem");
-const CONFIG_DIR = path.resolve(import.meta.dirname, "..");
+const ROOT = path.resolve(import.meta.dirname, "..");
+const HMEM_PATH = path.join(ROOT, "OPENCLAW.hmem");
 const DRY_RUN = process.argv.includes("--dry-run");
 
-// ---- Frontmatter parser ----
+// ============================================================
+// File lists — curated, not blind-walked
+// ============================================================
+
+/** Workspace bootstrap templates → W prefix */
+const WORKSPACE_FILES = [
+  "docs/reference/templates/SOUL.md",
+  "docs/reference/templates/TOOLS.md",
+  "docs/reference/templates/USER.md",
+  "docs/reference/templates/HEARTBEAT.md",
+  "docs/reference/templates/IDENTITY.md",
+  "docs/reference/templates/BOOT.md",
+  "docs/reference/templates/BOOTSTRAP.md",
+];
+
+/** Curated docs → O prefix */
+const DOC_FILES = [
+  // AGENTS.md reference chain
+  "SECURITY.md",
+  "docs/reference/RELEASING.md",
+  "docs/platforms/mac/release.md",
+  "docs/help/testing.md",
+  "docs/gateway/doctor.md",
+  "docs/.i18n/README.md",
+  ".github/pull_request_template.md",
+
+  // Channels (directly referenced from AGENTS.md)
+  "docs/channels/bluebubbles.md",
+  "docs/channels/broadcast-groups.md",
+  "docs/channels/channel-routing.md",
+  "docs/channels/discord.md",
+  "docs/channels/feishu.md",
+  "docs/channels/googlechat.md",
+  "docs/channels/grammy.md",
+  "docs/channels/group-messages.md",
+  "docs/channels/groups.md",
+  "docs/channels/imessage.md",
+  "docs/channels/index.md",
+  "docs/channels/irc.md",
+  "docs/channels/line.md",
+  "docs/channels/location.md",
+  "docs/channels/matrix.md",
+  "docs/channels/mattermost.md",
+  "docs/channels/msteams.md",
+  "docs/channels/nextcloud-talk.md",
+  "docs/channels/nostr.md",
+  "docs/channels/pairing.md",
+  "docs/channels/signal.md",
+  "docs/channels/slack.md",
+  "docs/channels/synology-chat.md",
+  "docs/channels/telegram.md",
+  "docs/channels/tlon.md",
+  "docs/channels/troubleshooting.md",
+  "docs/channels/twitch.md",
+  "docs/channels/whatsapp.md",
+  "docs/channels/zalo.md",
+  "docs/channels/zalouser.md",
+
+  // Core concepts (architecture knowledge for developer agent)
+  "docs/concepts/agent.md",
+  "docs/concepts/agent-loop.md",
+  "docs/concepts/agent-workspace.md",
+  "docs/concepts/architecture.md",
+  "docs/concepts/compaction.md",
+  "docs/concepts/context.md",
+  "docs/concepts/features.md",
+  "docs/concepts/markdown-formatting.md",
+  "docs/concepts/memory.md",
+  "docs/concepts/messages.md",
+  "docs/concepts/model-failover.md",
+  "docs/concepts/model-providers.md",
+  "docs/concepts/models.md",
+  "docs/concepts/multi-agent.md",
+  "docs/concepts/oauth.md",
+  "docs/concepts/presence.md",
+  "docs/concepts/queue.md",
+  "docs/concepts/retry.md",
+  "docs/concepts/session.md",
+  "docs/concepts/session-pruning.md",
+  "docs/concepts/session-tool.md",
+  "docs/concepts/streaming.md",
+  "docs/concepts/system-prompt.md",
+  "docs/concepts/timezone.md",
+  "docs/concepts/typebox.md",
+  "docs/concepts/typing-indicators.md",
+  "docs/concepts/usage-tracking.md",
+
+  // Design docs
+  "docs/design/kilo-gateway-integration.md",
+];
+
+// ============================================================
+// Frontmatter parser
+// ============================================================
 
 function parseFrontmatter(content) {
   if (!content.startsWith("---")) return { meta: {}, body: content };
@@ -38,153 +123,22 @@ function parseFrontmatter(content) {
     const match = line.match(/^(\w+):\s*"?(.+?)"?\s*$/);
     if (match) meta[match[1]] = match[2];
   }
-  const body = content.substring(end + 4).trim();
-  return { meta, body };
+  return { meta, body: content.substring(end + 4).trim() };
 }
 
-// ---- Markdown → hmem tree ----
+// ============================================================
+// Markdown → hmem converter
+// ============================================================
 
-/**
- * Parse markdown into a tree structure suitable for hmem write().
- * Returns tab-indented content string.
- *
- * Strategy:
- *   # H1 → title (part of L1)
- *   ## H2 → L2 (1 tab)
- *   ### H3 → L3 (2 tabs)
- *   #### H4 → L4 (3 tabs)
- *   ```lang ... ``` → child of current section (+1 tab from current heading)
- */
-function mdToHmemContent(title, summary, body) {
-  const lines = body.split("\n");
-  const output = [];
-
-  // L1: title + summary
-  output.push(title);
-  if (summary) {
-    output.push(summary);
-  }
-
-  let currentDepth = 0; // 0 = root level (L1), 1 = ##, 2 = ###, 3 = ####
-  let inCodeBlock = false;
-  let codeBlockLang = "";
-  let codeBlockLines = [];
-  let codeBlockDepth = 0;
-  let currentProseLines = [];
-
-  function flushProse() {
-    const text = currentProseLines.join("\n").trim();
-    if (text && currentDepth > 0) {
-      // Append prose as content of current heading node
-      const tabs = "\t".repeat(currentDepth);
-      // Don't create a separate node for prose — it's part of the heading content
-      // We'll merge it into the heading line
-    }
-    currentProseLines = [];
-  }
-
-  function flushCodeBlock() {
-    if (codeBlockLines.length === 0) return;
-    const depth = codeBlockDepth + 1; // one level deeper than the heading it's under
-    const tabs = "\t".repeat(Math.min(depth, 4)); // max depth 5 (0-indexed 4)
-    const langHint = codeBlockLang || "code";
-    const code = codeBlockLines.join("\n");
-    // Code block as child node — language as first line (becomes title)
-    output.push(`${tabs}${langHint}\n${tabs}\t${code.split("\n").join("\n" + tabs + "\t")}`);
-    codeBlockLines = [];
-    codeBlockLang = "";
-  }
-
-  // Collect sections: heading + content pairs
-  const sections = [];
-  let currentSection = null;
-
-  for (const line of lines) {
-    // Skip H1 (already used as title)
-    if (line.match(/^# [^#]/) && !inCodeBlock) continue;
-
-    // Code block toggle
-    if (line.startsWith("```")) {
-      if (!inCodeBlock) {
-        inCodeBlock = true;
-        codeBlockLang = line.substring(3).trim();
-        codeBlockDepth = currentDepth;
-        codeBlockLines = [];
-        continue;
-      } else {
-        inCodeBlock = false;
-        flushCodeBlock();
-        continue;
-      }
-    }
-
-    if (inCodeBlock) {
-      codeBlockLines.push(line);
-      continue;
-    }
-
-    // Heading detection
-    const h4 = line.match(/^#### (.+)/);
-    const h3 = line.match(/^### (.+)/);
-    const h2 = line.match(/^## (.+)/);
-
-    if (h2 || h3 || h4) {
-      // Save previous section
-      if (currentSection) sections.push(currentSection);
-
-      let depth, heading;
-      if (h2) { depth = 1; heading = h2[1]; }
-      else if (h3) { depth = 2; heading = h3[1]; }
-      else { depth = 3; heading = h4[1]; }
-
-      currentDepth = depth;
-      currentSection = { depth, heading, contentLines: [], codeBlocks: [] };
-      continue;
-    }
-
-    // Content lines
-    if (currentSection) {
-      // Check for code block start within section
-      currentSection.contentLines.push(line);
-    }
-  }
-  if (currentSection) sections.push(currentSection);
-
-  // Build output from sections
-  const result = [];
-  result.push(title);
-  if (summary) result.push(summary);
-
-  for (const section of sections) {
-    const tabs = "\t".repeat(section.depth);
-    const content = section.contentLines.join("\n").trim();
-
-    if (content) {
-      // Heading with inline content — truncate content for the node
-      const truncated = content.length > 2000 ? content.substring(0, 2000) : content;
-      result.push(`${tabs}${section.heading}\n${tabs}${truncated.split("\n").join("\n" + tabs)}`);
-    } else {
-      result.push(`${tabs}${section.heading}`);
-    }
-  }
-
-  return result.join("\n");
-}
-
-/**
- * Simpler approach: parse markdown into sections, build tab-indented hmem content.
- * Each heading becomes a node. Content between headings belongs to that node.
- * Code blocks are inlined (with spaces instead of tabs to avoid hmem depth confusion).
- */
 /**
  * Convert markdown to hmem content string.
  *
  * Structure:
- *   L1 (0 tabs): frontmatter title — summary (≤118 chars)
+ *   L1 (0 tabs): title — summary (≤118 chars)
  *   L2 (1 tab):  ## headings + prose
  *   L3 (2 tabs): ### headings
  *   L4 (3 tabs): #### headings
- *   Code blocks: +1 tab from current heading
+ *   Code blocks: +1 tab from current heading, joined with " | "
  */
 function mdToHmem(title, summary, body) {
   const lines = body.split("\n");
@@ -207,7 +161,7 @@ function mdToHmem(title, summary, body) {
   let inCode = false;
   let codeLang = "";
   let codeLines = [];
-  let headingDepth = 1; // ## = depth 1 (L2), ### = depth 2 (L3), #### = depth 3 (L4)
+  let headingDepth = 1;
   let proseBuffer = [];
 
   function flushProse() {
@@ -281,72 +235,94 @@ function mdToHmem(title, summary, body) {
   return parts.join("\n");
 }
 
-// ---- Main ----
+// ============================================================
+// Ingest a single file
+// ============================================================
 
-// Ensure hmem.config.json has O prefix
-const configPath = path.join(CONFIG_DIR, "hmem.config.json");
-let config;
-if (fs.existsSync(configPath)) {
-  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-  if (!raw.prefixes) raw.prefixes = {};
-  raw.prefixes.O = "OpenClaw Documentation";
-  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
-  config = loadHmemConfig(CONFIG_DIR);
-} else {
-  fs.writeFileSync(configPath, JSON.stringify({
-    prefixes: { O: "OpenClaw Documentation" }
-  }, null, 2) + "\n");
-  config = loadHmemConfig(CONFIG_DIR);
+function ingestFile(store, prefix, filePath, relPath) {
+  const raw = fs.readFileSync(filePath, "utf-8");
+  const { meta, body } = parseFrontmatter(raw);
+
+  // Title: W-prefix → always filename; O-prefix → frontmatter title or filename
+  let title;
+  if (prefix === "W") {
+    title = path.basename(relPath); // SOUL.md, TOOLS.md, etc.
+  } else {
+    const baseName = meta.title || path.basename(relPath, ".md");
+    title = `${baseName.replace(/\.md$/, "")}.md`;
+  }
+
+  // Summary: frontmatter or first non-heading line
+  const summary = meta.summary ||
+    body.split("\n").find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
+
+  const content = mdToHmem(title, summary, body);
+
+  if (DRY_RUN) {
+    const lineCount = content.split("\n").length;
+    console.log(`  [${prefix}] ${relPath} → "${title}" (${lineCount} lines)`);
+    return;
+  }
+
+  store.write(prefix, content);
 }
 
-console.log(`Prefixes: ${Object.keys(config.prefixes).join(", ")}`);
-console.log(`Docs dir: ${DOCS_DIR}`);
-console.log(`Target:   ${HMEM_PATH}`);
-console.log(`Dry run:  ${DRY_RUN}`);
+// ============================================================
+// Main
+// ============================================================
+
+// Ensure hmem.config.json has both prefixes
+const configPath = path.join(ROOT, "hmem.config.json");
+const configData = fs.existsSync(configPath)
+  ? JSON.parse(fs.readFileSync(configPath, "utf-8"))
+  : {};
+if (!configData.prefixes) configData.prefixes = {};
+configData.prefixes.W = "Workspace Bootstrap";
+configData.prefixes.O = "OpenClaw Documentation";
+fs.writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n");
+const config = loadHmemConfig(ROOT);
+
+// Validate file lists
+let totalFiles = 0;
+let missing = 0;
+
+for (const rel of [...WORKSPACE_FILES, ...DOC_FILES]) {
+  const full = path.join(ROOT, rel);
+  if (!fs.existsSync(full)) {
+    console.warn(`  MISSING: ${rel}`);
+    missing++;
+  } else {
+    totalFiles++;
+  }
+}
+
+console.log(`Workspace files (W): ${WORKSPACE_FILES.length}`);
+console.log(`Doc files (O):       ${DOC_FILES.length}`);
+console.log(`Total valid:         ${totalFiles}`);
+if (missing) console.log(`Missing:             ${missing}`);
+console.log(`Target:              ${HMEM_PATH}`);
+console.log(`Dry run:             ${DRY_RUN}`);
 console.log();
 
-// Collect all .md files (skip i18n/translations)
-const mdFiles = [];
-function walk(dir, rel = "") {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    const relPath = rel ? `${rel}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) {
-      // Skip i18n directories
-      if (entry.name.startsWith(".") || entry.name === "zh-CN" || entry.name === "node_modules") continue;
-      walk(full, relPath);
-    } else if (entry.name.endsWith(".md") && entry.name !== "README.md") {
-      mdFiles.push({ full, rel: relPath });
-    }
-  }
-}
-walk(DOCS_DIR);
-mdFiles.sort((a, b) => a.rel.localeCompare(b.rel));
-
-console.log(`Found ${mdFiles.length} .md files\n`);
-
 if (DRY_RUN) {
-  // Show first 5 as preview
-  for (const f of mdFiles.slice(0, 5)) {
-    const raw = fs.readFileSync(f.full, "utf-8");
-    const { meta, body } = parseFrontmatter(raw);
-    const baseName = meta.title || path.basename(f.rel, ".md");
-    const title = baseName.endsWith(".md") ? baseName : `${baseName}.md`;
-    const summary = meta.summary || "";
-    const content = mdToHmem(title, summary, body);
-    const lineCount = content.split("\n").length;
-    console.log(`--- ${f.rel} (${lineCount} lines) ---`);
-    console.log(content.substring(0, 500));
-    console.log("...\n");
+  console.log("=== Workspace (W) ===");
+  for (const rel of WORKSPACE_FILES) {
+    const full = path.join(ROOT, rel);
+    if (fs.existsSync(full)) ingestFile(null, "W", full, rel);
   }
-  console.log(`[DRY RUN] Would ingest ${mdFiles.length} files. Run without --dry-run to execute.`);
+  console.log("\n=== Docs (O) ===");
+  for (const rel of DOC_FILES) {
+    const full = path.join(ROOT, rel);
+    if (fs.existsSync(full)) ingestFile(null, "O", full, rel);
+  }
+  console.log(`\n[DRY RUN] Would ingest ${totalFiles} files.`);
   process.exit(0);
 }
 
-// Remove old hmem if exists
+// Remove old hmem
 if (fs.existsSync(HMEM_PATH)) {
   fs.unlinkSync(HMEM_PATH);
-  console.log("Removed old OPENCLAW.hmem");
+  console.log("Removed old OPENCLAW.hmem\n");
 }
 
 // Create fresh store
@@ -355,23 +331,31 @@ const store = new HmemStore(HMEM_PATH, config);
 let success = 0;
 let errors = 0;
 
-for (const f of mdFiles) {
+// Ingest workspace files (W prefix)
+console.log("Ingesting workspace files (W)...");
+for (const rel of WORKSPACE_FILES) {
+  const full = path.join(ROOT, rel);
+  if (!fs.existsSync(full)) continue;
   try {
-    const raw = fs.readFileSync(f.full, "utf-8");
-    const { meta, body } = parseFrontmatter(raw);
-    const baseName = meta.title || path.basename(f.rel, ".md");
-    const title = baseName.endsWith(".md") ? baseName : `${baseName}.md`;
-    const summary = meta.summary || body.split("\n").find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
-    const content = mdToHmem(title, summary, body);
-
-    store.write("O", content);
+    ingestFile(store, "W", full, rel);
     success++;
-
-    if (success % 50 === 0) {
-      process.stdout.write(`  ${success}/${mdFiles.length}...\r`);
-    }
   } catch (err) {
-    console.error(`  ERROR ${f.rel}: ${err.message}`);
+    console.error(`  ERROR ${rel}: ${err.message}`);
+    errors++;
+  }
+}
+
+// Ingest doc files (O prefix)
+console.log("Ingesting docs (O)...");
+for (const rel of DOC_FILES) {
+  const full = path.join(ROOT, rel);
+  if (!fs.existsSync(full)) continue;
+  try {
+    ingestFile(store, "O", full, rel);
+    success++;
+    if (success % 20 === 0) process.stdout.write(`  ${success}/${totalFiles}...\r`);
+  } catch (err) {
+    console.error(`  ERROR ${rel}: ${err.message}`);
     errors++;
   }
 }
@@ -380,6 +364,8 @@ store.close();
 
 const stats = fs.statSync(HMEM_PATH);
 console.log(`\nDone!`);
-console.log(`  Ingested: ${success} files`);
-console.log(`  Errors:   ${errors}`);
-console.log(`  Size:     ${(stats.size / 1024).toFixed(0)} KB`);
+console.log(`  W entries: ${WORKSPACE_FILES.length}`);
+console.log(`  O entries: ${DOC_FILES.length}`);
+console.log(`  Success:   ${success}`);
+console.log(`  Errors:    ${errors}`);
+console.log(`  Size:      ${(stats.size / 1024).toFixed(0)} KB`);
