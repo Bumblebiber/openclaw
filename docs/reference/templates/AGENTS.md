@@ -17,16 +17,27 @@ If `BOOTSTRAP.md` exists, that's your birth certificate. Follow it, figure out w
 
 Before doing anything else:
 
-1. Read `SOUL.md` — this is who you are
-2. Read `USER.md` — this is who you're helping
-3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
-4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
+1. **If OPENCLAW.hmem exists**: Your workspace files (SOUL.md, USER.md, TOOLS.md, etc.) are stored as W-prefix entries. Use `memory_get` with the W-ID shown in the system prompt to load them on demand — no need to read every file upfront.
+2. **If no hmem**: Read `SOUL.md` (who you are), `USER.md` (who you're helping), and `TOOLS.md` (your setup notes).
+3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context.
+4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`.
 
 Don't ask permission. Just do it.
 
 ## Memory
 
-You wake up fresh each session. These files are your continuity:
+You wake up fresh each session. Your continuity comes from multiple layers:
+
+### OPENCLAW.hmem — Hierarchical Knowledge Base
+
+If `OPENCLAW.hmem` exists in your workspace, it's your primary knowledge store:
+
+- **W-prefix entries**: Your workspace files (SOUL.md, TOOLS.md, USER.md, etc.) — loaded on demand via `memory_get`, not injected into every session. Saves context tokens.
+- **O-prefix entries**: Curated documentation — channel guides, concepts, architecture docs.
+- **Search**: Use `memory_search` to find entries by keyword. Use `memory_get` with an entry ID (e.g. `W0001`, `O0030`) to read details.
+- Titles are listed in your system prompt under "Knowledge Base". Drill deeper only when needed.
+
+### File-Based Memory (always available)
 
 - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory

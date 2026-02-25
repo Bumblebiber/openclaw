@@ -103,12 +103,12 @@ Die eigentliche Token-Einsparung.
 - [x] Nach Komprimierung: "Workspace files in OPENCLAW.hmem unter W-prefix"
 - [x] AGENTS.md Red Lines bleiben weiterhin direkt injiziert
 
-## Phase 3: AGENTS.md als Einstiegspunkt
+## Phase 3: AGENTS.md als Einstiegspunkt ✅
 
-- [ ] hmem-Referenz in AGENTS.md einbauen: "Dein Wissen liegt in OPENCLAW.hmem.
-      Nutze memory_search/memory_get für Zugriff auf Docs, Persona, Tools."
-- [ ] `## Session Startup` Section: hmem-Ladebefehl (analog zu Council CLAUDE.md)
-- [ ] Bestehende Datei-Referenzen (z.B. "read SECURITY.md") um hmem-Hinweis ergänzen
+- [x] `docs/reference/templates/AGENTS.md`: hmem-Referenz eingebaut
+- [x] `## Every Session`: Wenn hmem existiert → W-prefix per memory_get laden
+- [x] `## Memory`: Neuer Abschnitt "OPENCLAW.hmem — Hierarchical Knowledge Base"
+- [x] Fallback beibehalten: Ohne hmem → altes Verhalten (direkte File-Reads)
 
 ## Phase 4: TypeScript Build verifizieren
 
