@@ -1,9 +1,8 @@
 {
   "name": "openclaw",
   "version": "2026.2.25",
-  "description": "Multi-channel AI gateway with extensible messaging integrations",
+  "description": "TIM Crabs - Theoretically Infinite Memory Gateway (OpenClaw Fork)",
   "keywords": [],
-  "homepage": "https://github.com/openclaw/openclaw#readme",
   "bugs": {
     "url": "https://github.com/openclaw/openclaw/issues"
   },

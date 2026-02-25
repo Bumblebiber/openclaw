@@ -1,4 +1,7 @@
 import { createHmac, createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import path from "node:path";
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
@@ -38,6 +41,7 @@ function buildMemorySection(params: {
   isMinimal: boolean;
   availableTools: Set<string>;
   citationsMode?: MemoryCitationsMode;
+  workspaceDir?: string;
 }) {
   if (params.isMinimal) {
     return [];
@@ -45,9 +49,32 @@ function buildMemorySection(params: {
   if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
     return [];
   }
+  
+  const hmemL1: string[] = [];
+  try {
+    if (params.workspaceDir) {
+      const hmemPath = path.resolve(params.workspaceDir, "OPENCLAW.hmem");
+      if (fs.existsSync(hmemPath)) {
+        const db = new DatabaseSync(hmemPath);
+        const rows = db.prepare("SELECT id, created_at, level_1 FROM memories ORDER BY created_at DESC LIMIT 50").all() as any[];
+        if (rows.length > 0) {
+          hmemL1.push("", "### hmem Level-1 Summaries (injected from OPENCLAW.hmem)", "Read these generic knowledge nodes first. If a node is relevant to the question, invoke memory_get with its ID as path to deep-dive.", "");
+          for (const r of rows) {
+             const d = String(r.created_at).substring(0, 10);
+             hmemL1.push(`[${r.id}] ${d} — ${r.level_1}`);
+          }
+        }
+        db.close();
+      }
+    }
+  } catch (e) {
+    // Ignore db errors
+  }
+
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on the hierarchical hmem database; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    ...hmemL1
   ];
   if (params.citationsMode === "off") {
     lines.push(
@@ -394,6 +421,7 @@ export function buildAgentSystemPrompt(params: {
     isMinimal,
     availableTools,
     citationsMode: params.memoryCitationsMode,
+    workspaceDir: params.workspaceDir,
   });
   const docsSection = buildDocsSection({
     docsPath: params.docsPath,

@@ -212,84 +212,64 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       sessionKey?: string;
     },
   ): Promise<MemorySearchResult[]> {
-    void this.warmSession(opts?.sessionKey);
-    if (this.settings.sync.onSearch && (this.dirty || this.sessionsDirty)) {
-      void this.sync({ reason: "search" }).catch((err) => {
-        log.warn(`memory sync failed (search): ${String(err)}`);
-      });
-    }
-    const cleaned = query.trim();
-    if (!cleaned) {
+    const cleaned = query.trim().toLowerCase();
+    if (!cleaned) return [];
+    const maxResults = opts?.maxResults ?? 10;
+    
+    // Deep-Core hmem Integration
+    try {
+      // Connect to the injected OPENCLAW.hmem knowledge base
+      const hmemPath = path.resolve(process.cwd(), "OPENCLAW.hmem");
+      const { DatabaseSync } = await import("node:sqlite");
+      const hmemDb = new DatabaseSync(hmemPath);
+
+      // Simple keyword scoring algorithm (similar to hmem's memory-search.ts)
+      const keywords = cleaned.split(/\s+/).filter(w => w.length > 2);
+      
+      const rows = hmemDb.prepare(`
+        SELECT id, depth, content FROM memory_nodes 
+        WHERE depth <= 4
+      `).all() as any[];
+
+      const scored = rows.map(row => {
+        let score = 0;
+        const text = (row.content as string).toLowerCase();
+        for (const kw of keywords) {
+          if (text.includes(kw)) score += 1;
+        }
+        return { row, score };
+      }).filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+
+      const results: MemorySearchResult[] = [];
+      for (const { row, score } of scored) {
+        // Find the L3 (File) node to get the file path
+        let filePath = "OPENCLAW.hmem";
+        if (row.depth === 4) {
+           const parentId = row.id.split('.').slice(0, -1).join('.');
+           const parentRow = hmemDb.prepare('SELECT content FROM memory_nodes WHERE id = ?').get(parentId) as any;
+           if (parentRow && parentRow.content.startsWith("Datei: ")) {
+             filePath = parentRow.content.replace("Datei: ", "");
+           }
+        }
+        
+        results.push({
+          path: filePath,
+          startLine: 1,
+          endLine: 1,
+          score: score,
+          snippet: `[hmem ID: ${row.id}] ${row.content}`,
+          source: "memory"
+        });
+      }
+      
+      hmemDb.close();
+      return results;
+    } catch (err) {
+      log.error(`hmem deep-core search failed: ${err}`);
       return [];
     }
-    const minScore = opts?.minScore ?? this.settings.query.minScore;
-    const maxResults = opts?.maxResults ?? this.settings.query.maxResults;
-    const hybrid = this.settings.query.hybrid;
-    const candidates = Math.min(
-      200,
-      Math.max(1, Math.floor(maxResults * hybrid.candidateMultiplier)),
-    );
-
-    // FTS-only mode: no embedding provider available
-    if (!this.provider) {
-      if (!this.fts.enabled || !this.fts.available) {
-        log.warn("memory search: no provider and FTS unavailable");
-        return [];
-      }
-
-      // Extract keywords for better FTS matching on conversational queries
-      // e.g., "that thing we discussed about the API" → ["discussed", "API"]
-      const keywords = extractKeywords(cleaned);
-      const searchTerms = keywords.length > 0 ? keywords : [cleaned];
-
-      // Search with each keyword and merge results
-      const resultSets = await Promise.all(
-        searchTerms.map((term) => this.searchKeyword(term, candidates).catch(() => [])),
-      );
-
-      // Merge and deduplicate results, keeping highest score for each chunk
-      const seenIds = new Map<string, (typeof resultSets)[0][0]>();
-      for (const results of resultSets) {
-        for (const result of results) {
-          const existing = seenIds.get(result.id);
-          if (!existing || result.score > existing.score) {
-            seenIds.set(result.id, result);
-          }
-        }
-      }
-
-      const merged = [...seenIds.values()]
-        .toSorted((a, b) => b.score - a.score)
-        .filter((entry) => entry.score >= minScore)
-        .slice(0, maxResults);
-
-      return merged;
-    }
-
-    const keywordResults = hybrid.enabled
-      ? await this.searchKeyword(cleaned, candidates).catch(() => [])
-      : [];
-
-    const queryVec = await this.embedQueryWithTimeout(cleaned);
-    const hasVector = queryVec.some((v) => v !== 0);
-    const vectorResults = hasVector
-      ? await this.searchVector(queryVec, candidates).catch(() => [])
-      : [];
-
-    if (!hybrid.enabled) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
-    }
-
-    const merged = await this.mergeHybridResults({
-      vector: vectorResults,
-      keyword: keywordResults,
-      vectorWeight: hybrid.vectorWeight,
-      textWeight: hybrid.textWeight,
-      mmr: hybrid.mmr,
-      temporalDecay: hybrid.temporalDecay,
-    });
-
-    return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
   }
 
   private async searchVector(
@@ -399,6 +379,24 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     from?: number;
     lines?: number;
   }): Promise<{ text: string; path: string }> {
+    try {
+      // Connect to the injected OPENCLAW.hmem knowledge base
+      const hmemPath = path.resolve(process.cwd(), "OPENCLAW.hmem");
+      const { DatabaseSync } = await import("node:sqlite");
+      const hmemDb = new DatabaseSync(hmemPath);
+      
+      // We can also query node IDs directly if the agent requested it in the relPath
+      if (params.relPath.includes(".")) {
+         const row = hmemDb.prepare('SELECT content FROM memory_nodes WHERE id = ?').get(params.relPath) as any;
+         if (row) {
+            hmemDb.close();
+            return { text: row.content, path: params.relPath };
+         }
+      }
+      hmemDb.close();
+    } catch {}
+
+    // Fallback to real file system if it's not a hmem node
     const rawPath = params.relPath.trim();
     if (!rawPath) {
       throw new Error("path required");
@@ -407,56 +405,14 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       ? path.resolve(rawPath)
       : path.resolve(this.workspaceDir, rawPath);
     const relPath = path.relative(this.workspaceDir, absPath).replace(/\\/g, "/");
-    const inWorkspace =
-      relPath.length > 0 && !relPath.startsWith("..") && !path.isAbsolute(relPath);
-    const allowedWorkspace = inWorkspace && isMemoryPath(relPath);
-    let allowedAdditional = false;
-    if (!allowedWorkspace && this.settings.extraPaths.length > 0) {
-      const additionalPaths = normalizeExtraMemoryPaths(
-        this.workspaceDir,
-        this.settings.extraPaths,
-      );
-      for (const additionalPath of additionalPaths) {
-        try {
-          const stat = await fs.lstat(additionalPath);
-          if (stat.isSymbolicLink()) {
-            continue;
-          }
-          if (stat.isDirectory()) {
-            if (absPath === additionalPath || absPath.startsWith(`${additionalPath}${path.sep}`)) {
-              allowedAdditional = true;
-              break;
-            }
-            continue;
-          }
-          if (stat.isFile()) {
-            if (absPath === additionalPath && absPath.endsWith(".md")) {
-              allowedAdditional = true;
-              break;
-            }
-          }
-        } catch {}
-      }
-    }
-    if (!allowedWorkspace && !allowedAdditional) {
-      throw new Error("path required");
-    }
-    if (!absPath.endsWith(".md")) {
-      throw new Error("path required");
-    }
-    const statResult = await statRegularFile(absPath);
-    if (statResult.missing) {
-      return { text: "", path: relPath };
-    }
-    let content: string;
+    
+    let content = "";
     try {
       content = await fs.readFile(absPath, "utf-8");
     } catch (err) {
-      if (isFileMissingError(err)) {
-        return { text: "", path: relPath };
-      }
-      throw err;
+      return { text: "", path: relPath };
     }
+    
     if (!params.from && !params.lines) {
       return { text: content, path: relPath };
     }
