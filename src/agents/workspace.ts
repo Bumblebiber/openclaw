@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
@@ -438,6 +440,32 @@ async function resolveMemoryBootstrapEntries(
   return deduped;
 }
 
+const HMEM_FILENAME = "OPENCLAW.hmem";
+
+/**
+ * Check which workspace files are managed by hmem (W-prefix entries).
+ * Returns a set of filenames (e.g. "SOUL.md", "TOOLS.md") that should NOT
+ * be injected into the system prompt — the agent reads them via memory_get.
+ */
+function getHmemManagedFileNames(workspaceDir: string): Set<string> {
+  const hmemPath = path.join(workspaceDir, HMEM_FILENAME);
+  if (!fsSync.existsSync(hmemPath)) return new Set();
+
+  try {
+    const db = new DatabaseSync(hmemPath);
+    const rows = db
+      .prepare(
+        "SELECT title FROM memories WHERE prefix = 'W' AND (obsolete = 0 OR obsolete IS NULL)",
+      )
+      .all() as Array<{ title: string }>;
+    db.close();
+    // W entries have titles like "SOUL.md", "TOOLS.md" — matching bootstrap filenames
+    return new Set(rows.map((r) => r.title));
+  } catch {
+    return new Set();
+  }
+}
+
 export async function loadWorkspaceBootstrapFiles(dir: string): Promise<WorkspaceBootstrapFile[]> {
   const resolvedDir = resolveUserPath(dir);
 
@@ -477,8 +505,21 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
 
   entries.push(...(await resolveMemoryBootstrapEntries(resolvedDir)));
 
+  // If hmem manages some workspace files (W-prefix), skip their injection.
+  // AGENTS.md is always injected (it's the hmem entry point).
+  // MEMORY.md is always injected (separate memory system).
+  const ALWAYS_INJECT = new Set<string>([
+    DEFAULT_AGENTS_FILENAME,
+    DEFAULT_MEMORY_FILENAME,
+    DEFAULT_MEMORY_ALT_FILENAME,
+  ]);
+  const hmemManaged = getHmemManagedFileNames(resolvedDir);
+
   const result: WorkspaceBootstrapFile[] = [];
   for (const entry of entries) {
+    if (hmemManaged.has(entry.name) && !ALWAYS_INJECT.has(entry.name)) {
+      continue; // managed by hmem — agent reads via memory_get
+    }
     try {
       const content = await readFileWithCache(entry.filePath);
       result.push({

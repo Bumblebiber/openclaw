@@ -46,26 +46,54 @@ function loadHmemTitles(workspaceDir?: string): string[] {
     const count = db
       .prepare("SELECT COUNT(*) as c FROM memories WHERE (obsolete = 0 OR obsolete IS NULL)")
       .get() as { c: number };
-    const rows = db
+    const wRows = db
       .prepare(
         `SELECT prefix || printf('%04d', seq) as id, title
-         FROM memories WHERE (obsolete = 0 OR obsolete IS NULL)
+         FROM memories WHERE prefix = 'W' AND (obsolete = 0 OR obsolete IS NULL)
+         ORDER BY seq`,
+      )
+      .all() as Array<{ id: string; title: string }>;
+    const oRows = db
+      .prepare(
+        `SELECT prefix || printf('%04d', seq) as id, title
+         FROM memories WHERE prefix != 'W' AND (obsolete = 0 OR obsolete IS NULL)
          ORDER BY prefix, seq LIMIT 50`,
       )
       .all() as Array<{ id: string; title: string }>;
+    const oTotal = (
+      db
+        .prepare(
+          "SELECT COUNT(*) as c FROM memories WHERE prefix != 'W' AND (obsolete = 0 OR obsolete IS NULL)",
+        )
+        .get() as { c: number }
+    ).c;
     db.close();
-    if (rows.length === 0) return [];
+    if (wRows.length === 0 && oRows.length === 0) return [];
     const lines = [
       "",
       `### Knowledge Base (OPENCLAW.hmem — ${count.c} entries)`,
-      "Searchable via memory_search. Use memory_get with entry ID (e.g. O0030) to read details.",
+      "Use memory_get with entry ID to read details. Use memory_search to find entries by keyword.",
       "",
     ];
-    for (const r of rows) {
-      lines.push(`- ${r.id}: ${r.title}`);
+    if (wRows.length > 0) {
+      lines.push(
+        "**Workspace files** (not injected — read via memory_get when needed):",
+      );
+      for (const r of wRows) {
+        lines.push(`- ${r.id}: ${r.title}`);
+      }
+      lines.push("");
     }
-    if (count.c > 50) {
-      lines.push(`- ... and ${count.c - 50} more (use memory_search to find them)`);
+    if (oRows.length > 0) {
+      lines.push("**Documentation:**");
+      for (const r of oRows) {
+        lines.push(`- ${r.id}: ${r.title}`);
+      }
+      if (oTotal > 50) {
+        lines.push(
+          `- ... and ${oTotal - 50} more (use memory_search to find them)`,
+        );
+      }
     }
     return lines;
   } catch {
@@ -88,7 +116,9 @@ function buildMemorySection(params: {
   const hmemTitles = loadHmemTitles(params.workspaceDir);
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on the hierarchical memory database; then use memory_get to pull only the needed lines. For hmem node IDs (e.g. O0030), pass the ID directly to memory_get. If low confidence after search, say you checked.",
+    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search; then use memory_get to pull only the needed details.",
+    "For hmem node IDs (e.g. O0030, W0001), pass the ID directly to memory_get.",
+    "Workspace files (SOUL.md, TOOLS.md, USER.md, etc.) are stored in hmem under W-prefix entries — use memory_get with the W-ID to read your persona, tool notes, or user preferences on demand instead of having them always in context.",
     ...hmemTitles,
   ];
   if (params.citationsMode === "off") {

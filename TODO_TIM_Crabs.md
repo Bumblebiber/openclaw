@@ -70,38 +70,38 @@ Architektur-Wissen das ein Entwickler-Agent braucht:
 - [ ] `docs/design/` auswerten
 - [ ] Kuratierte Liste erstellen (nicht blind alles)
 
-### 1.4 Ingestion-Script umbauen
+### 1.4 Ingestion-Script umbauen ✅
 
-- [ ] `ingest-docs.mjs` refactoren: statt `docs/**/*.md` eine explizite Dateiliste
-- [ ] Workspace-Bootstrap-Dateien aus `~/.openclaw/workspace/` ingesten (oder Templates)
-- [ ] Prefix-Strategie: `W` für Workspace-Files? `D` für Docs? Oder alles `O`?
-- [ ] i18n-Duplikate (zh-CN, ja-JP) ausschließen
-- [ ] Ziel: ~60-80 kuratierte Einträge statt 339 Blindeinträge
+- [x] `ingest-docs.mjs` refactored: explizite Dateilisten statt `docs/**/*.md`
+- [x] Workspace-Bootstrap aus `docs/reference/templates/` → W-Prefix
+- [x] Prefix-Strategie: `W` für Workspace-Files, `O` für Docs
+- [x] i18n-Duplikate ausgeschlossen
+- [x] Ergebnis: 72 kuratierte Einträge (7 W + 65 O), 1 MB statt 3.7 MB
 
-## Phase 2: System-Prompt entschlacken
+## Phase 2: System-Prompt entschlacken ✅
 
 Die eigentliche Token-Einsparung.
 
-### 2.1 Workspace-File-Injection abschalten
+### 2.1 Workspace-File-Injection abschalten ✅
 
-- [ ] `workspace.ts` / `bootstrap.ts`: Dateien die in hmem sind NICHT mehr in
-      `buildBootstrapContextFiles()` aufnehmen
-- [ ] Konfigurierbar machen: `hmemManagedFiles: ["SOUL.md", "TOOLS.md", ...]`
-- [ ] Fallback: wenn OPENCLAW.hmem nicht existiert → altes Verhalten beibehalten
+- [x] `workspace.ts`: `getHmemManagedFileNames()` prüft OPENCLAW.hmem auf W-Einträge
+- [x] `loadWorkspaceBootstrapFiles()` filtert hmem-managed files raus
+- [x] Dynamisch: liest W-prefix Titel aus SQLite, kein Hardcoding
+- [x] Fallback: ohne OPENCLAW.hmem → altes Verhalten (alle Files injiziert)
+- [x] AGENTS.md + MEMORY.md bleiben IMMER injiziert (ALWAYS_INJECT Set)
 
-### 2.2 Prompt-Anweisungen anpassen
+### 2.2 Prompt-Anweisungen anpassen ✅
 
-- [ ] `system-prompt.ts`: Memory Recall Section erweitern — Agent muss wissen,
-      dass SOUL/TOOLS/USER etc. per `memory_get` abrufbar sind
-- [ ] Konkrete Anweisung: "Deine Persona steht in hmem unter SOUL.md — lies sie
-      bei Bedarf mit memory_get"
-- [ ] `loadHmemTitles()`: Workspace-Einträge visuell hervorheben (z.B. `[WS]` Prefix)
+- [x] `system-prompt.ts`: Memory Recall erweitert — Agent weiß über W-prefix Bescheid
+- [x] `loadHmemTitles()`: W-Einträge separat unter "Workspace files" aufgelistet
+- [x] O-Einträge unter "Documentation" aufgelistet
+- [x] Anweisung: "Workspace files stored in hmem under W-prefix — use memory_get"
 
-### 2.3 Post-Compaction-Context anpassen
+### 2.3 Post-Compaction-Context anpassen ✅
 
-- [ ] `post-compaction-context.ts`: Statt AGENTS.md-Sections zu re-injizieren →
-      hmem-Reminder injizieren ("Lade deine Persona via memory_get")
-- [ ] Oder: Nur die kritischsten Regeln (Red Lines) direkt, Rest via hmem
+- [x] `post-compaction-context.ts`: hmem-Reminder hinzugefügt
+- [x] Nach Komprimierung: "Workspace files in OPENCLAW.hmem unter W-prefix"
+- [x] AGENTS.md Red Lines bleiben weiterhin direkt injiziert
 
 ## Phase 3: AGENTS.md als Einstiegspunkt
 

@@ -35,6 +35,8 @@ export async function readPostCompactionContext(workspaceDir: string): Promise<s
       "[Post-compaction context refresh]\n\n" +
       "Session was just compacted. The conversation summary above is a hint, NOT a substitute for your startup sequence. " +
       "Execute your Session Startup sequence now — read the required files before responding to the user.\n\n" +
+      "Workspace files (SOUL.md, TOOLS.md, USER.md, etc.) are in OPENCLAW.hmem under W-prefix entries. " +
+      "Use memory_get with the W-ID to reload your persona, tool notes, or user preferences as needed.\n\n" +
       "Critical rules from AGENTS.md:\n\n" +
       safeContent
     );
