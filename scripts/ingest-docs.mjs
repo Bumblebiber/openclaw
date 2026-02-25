@@ -179,42 +179,42 @@ function mdToHmemContent(title, summary, body) {
 /**
  * Convert markdown to hmem content string.
  *
- * Structure (shifted by 1 — filename is L1):
- *   L1 (0 tabs): filename (e.g. "gateway/heartbeat")
- *   L2 (1 tab):  frontmatter title + summary
- *   L3 (2 tabs): ## headings
- *   L4 (3 tabs): ### headings
- *   L5 (4 tabs): #### headings
+ * Structure:
+ *   L1 (0 tabs): frontmatter title — summary (≤118 chars)
+ *   L2 (1 tab):  ## headings + prose
+ *   L3 (2 tabs): ### headings
+ *   L4 (3 tabs): #### headings
  *   Code blocks: +1 tab from current heading
- *   Prose: same level as current heading
  */
-function mdToHmem(filename, title, summary, body) {
+function mdToHmem(title, summary, body) {
   const lines = body.split("\n");
   const parts = [];
 
-  // L1: filename as the entry title (≤120 chars)
-  parts.push(filename.length <= 118 ? filename : filename.substring(0, 118));
-
-  // L2: frontmatter title + summary (one level deeper)
+  // L1: "Title — Summary" (≤118 chars for autoExtractTitle)
+  const maxL1 = 118;
   if (summary) {
     const combined = `${title} — ${summary}`;
-    parts.push(`\t${combined.length <= 200 ? combined : combined.substring(0, 200)}`);
-  } else if (title !== filename) {
-    parts.push(`\t${title}`);
+    if (combined.length <= maxL1) {
+      parts.push(combined);
+    } else {
+      const available = maxL1 - title.length - 3;
+      parts.push(available > 20 ? `${title} — ${summary.substring(0, available)}` : title);
+    }
+  } else {
+    parts.push(title);
   }
 
   let inCode = false;
   let codeLang = "";
   let codeLines = [];
-  // Shifted by +1: ## = depth 2 (L3), ### = depth 3 (L4), #### = depth 4 (L5)
-  let headingDepth = 2; // default: content before first heading goes to L3
+  let headingDepth = 1; // ## = depth 1 (L2), ### = depth 2 (L3), #### = depth 3 (L4)
   let proseBuffer = [];
 
   function flushProse() {
     const text = proseBuffer.join(" ").trim();
     proseBuffer = [];
     if (!text) return;
-    const maxChars = headingDepth <= 2 ? 2400 : headingDepth <= 3 ? 5000 : 10000;
+    const maxChars = headingDepth <= 1 ? 2400 : headingDepth <= 2 ? 5000 : 10000;
     const truncated = text.length > maxChars ? text.substring(0, maxChars) : text;
     const tabs = "\t".repeat(headingDepth);
     parts.push(`${tabs}${truncated}`);
@@ -234,7 +234,7 @@ function mdToHmem(filename, title, summary, body) {
         continue;
       } else {
         inCode = false;
-        const depth = Math.min(headingDepth + 1, 4); // max depth 5 (0-indexed 4)
+        const depth = Math.min(headingDepth + 1, 4);
         const tabs = "\t".repeat(depth);
         const codeSingleLine = codeLines.map(l => l.trim()).filter(Boolean).join(" | ");
         const maxCodeLen = 1500;
@@ -252,23 +252,23 @@ function mdToHmem(filename, title, summary, body) {
       continue;
     }
 
-    // Headings — shifted by +1 compared to before
+    // Headings
     const h4 = line.match(/^####\s+(.+)/);
     const h3 = line.match(/^###\s+(.+)/);
     const h2 = line.match(/^##\s+(.+)/);
 
     if (h2) {
       flushProse();
-      headingDepth = 2; // ## → L3 (2 tabs)
-      parts.push(`\t\t${h2[1]}`);
+      headingDepth = 1;
+      parts.push(`\t${h2[1]}`);
     } else if (h3) {
       flushProse();
-      headingDepth = 3; // ### → L4 (3 tabs)
-      parts.push(`\t\t\t${h3[1]}`);
+      headingDepth = 2;
+      parts.push(`\t\t${h3[1]}`);
     } else if (h4) {
       flushProse();
-      headingDepth = 4; // #### → L5 (4 tabs)
-      parts.push(`\t\t\t\t${h4[1]}`);
+      headingDepth = 3;
+      parts.push(`\t\t\t${h4[1]}`);
     } else {
       const trimmed = line.trim();
       if (trimmed && trimmed !== "---") {
@@ -330,10 +330,10 @@ if (DRY_RUN) {
   for (const f of mdFiles.slice(0, 5)) {
     const raw = fs.readFileSync(f.full, "utf-8");
     const { meta, body } = parseFrontmatter(raw);
-    const filename = f.rel.replace(/\.md$/, "");
-    const title = meta.title || path.basename(f.rel, ".md");
+    const baseName = meta.title || path.basename(f.rel, ".md");
+    const title = baseName.endsWith(".md") ? baseName : `${baseName}.md`;
     const summary = meta.summary || "";
-    const content = mdToHmem(filename, title, summary, body);
+    const content = mdToHmem(title, summary, body);
     const lineCount = content.split("\n").length;
     console.log(`--- ${f.rel} (${lineCount} lines) ---`);
     console.log(content.substring(0, 500));
@@ -359,10 +359,10 @@ for (const f of mdFiles) {
   try {
     const raw = fs.readFileSync(f.full, "utf-8");
     const { meta, body } = parseFrontmatter(raw);
-    const filename = f.rel.replace(/\.md$/, ""); // e.g. "gateway/heartbeat"
-    const title = meta.title || path.basename(f.rel, ".md");
+    const baseName = meta.title || path.basename(f.rel, ".md");
+    const title = baseName.endsWith(".md") ? baseName : `${baseName}.md`;
     const summary = meta.summary || body.split("\n").find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
-    const content = mdToHmem(filename, title, summary, body);
+    const content = mdToHmem(title, summary, body);
 
     store.write("O", content);
     success++;

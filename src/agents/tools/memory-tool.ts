@@ -50,7 +50,7 @@ export function createMemorySearchTool(options: {
     label: "Memory Search",
     name: "memory_search",
     description:
-      "Mandatory recall step: semantically search MEMORY.md + memory/*.md (and optional session transcripts) before answering questions about prior work, decisions, dates, people, preferences, or todos; returns top snippets with path + lines. If response has disabled=true, memory retrieval is unavailable and should be surfaced to the user.",
+      "Mandatory recall step: search the memory database (MEMORY.md, memory/*.md, and the hmem knowledge base) before answering questions about prior work, decisions, dates, people, preferences, or docs. Returns snippets with source paths and hmem node IDs (e.g. [hmem:O0030.2]). Use memory_get with the node ID to drill deeper.",
     parameters: MemorySearchSchema,
     execute: async (_toolCallId, params) => {
       const query = readStringParam(params, "query", { required: true });
@@ -111,7 +111,7 @@ export function createMemoryGetTool(options: {
     label: "Memory Get",
     name: "memory_get",
     description:
-      "Safe snippet read from MEMORY.md or memory/*.md with optional from/lines; use after memory_search to pull only the needed lines and keep context small.",
+      "Read memory content by path or hmem node ID. Pass a file path from memory_search citations, or an hmem node ID (e.g. O0030, O0030.2) to fetch its full text and children. Use to lazy-load context after memory_search.",
     parameters: MemoryGetSchema,
     execute: async (_toolCallId, params) => {
       const relPath = readStringParam(params, "path", { required: true });

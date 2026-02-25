@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import fsSync from "node:fs";
 import { type FSWatcher } from "chokidar";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import type { ResolvedMemorySearchConfig } from "../agents/memory-search.js";
@@ -39,6 +40,164 @@ const BATCH_FAILURE_LIMIT = 2;
 const log = createSubsystemLogger("memory");
 
 const INDEX_CACHE = new Map<string, MemoryIndexManager>();
+
+// ── hmem knowledge base support ──────────────────────────────────────────
+const HMEM_FILENAME = "OPENCLAW.hmem";
+let hmemDbCache: { db: DatabaseSync; path: string } | null = null;
+
+function getHmemDb(workspaceDir: string): DatabaseSync | null {
+  const hmemPath = path.resolve(workspaceDir, HMEM_FILENAME);
+  if (hmemDbCache?.path === hmemPath) {
+    return hmemDbCache.db;
+  }
+  if (!fsSync.existsSync(hmemPath)) {
+    return null;
+  }
+  try {
+    const db = new DatabaseSync(hmemPath);
+    hmemDbCache = { db, path: hmemPath };
+    return db;
+  } catch (err) {
+    log.warn(`hmem: failed to open ${hmemPath}: ${err}`);
+    return null;
+  }
+}
+
+/**
+ * Search the hmem knowledge base by querying the `memories` table (entry-level).
+ * Only 339 rows — fast even without indexes. Returns entry titles + L1 summaries.
+ * The agent can then drill down via readHmemNode().
+ */
+function searchHmem(
+  workspaceDir: string,
+  query: string,
+  maxResults: number,
+): MemorySearchResult[] {
+  const db = getHmemDb(workspaceDir);
+  if (!db) return [];
+  try {
+    const keywords = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+    if (keywords.length === 0) return [];
+
+    // Search entry-level only (memories table, ~339 rows) — title + level_1
+    const conditions = keywords.map(
+      () => "(LOWER(title) LIKE ? OR LOWER(level_1) LIKE ?)",
+    );
+    const params = keywords.flatMap((kw) => [`%${kw}%`, `%${kw}%`]);
+
+    const rows = db
+      .prepare(
+        `SELECT prefix || printf('%04d', seq) as id, title, level_1
+         FROM memories
+         WHERE (obsolete = 0 OR obsolete IS NULL) AND (${conditions.join(" OR ")})
+         LIMIT ?`,
+      )
+      .all(...params, maxResults * 2) as Array<{
+      id: string;
+      title: string;
+      level_1: string;
+    }>;
+
+    // Score by keyword hits in title (2x weight) + level_1
+    const scored = rows
+      .map((row) => {
+        const titleLower = (row.title ?? "").toLowerCase();
+        const l1Lower = (row.level_1 ?? "").toLowerCase();
+        let score = 0;
+        for (const kw of keywords) {
+          if (titleLower.includes(kw)) score += 2;
+          if (l1Lower.includes(kw)) score += 1;
+        }
+        return { row, score };
+      })
+      .filter((r) => r.score > 0)
+      .toSorted((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+
+    return scored.map(({ row, score }) => ({
+      path: HMEM_FILENAME,
+      startLine: 1,
+      endLine: 1,
+      score: Math.min(score / (keywords.length * 2), 1),
+      snippet: `[hmem:${row.id}] ${row.title}\n${(row.level_1 ?? "").substring(0, SNIPPET_MAX_CHARS)}`,
+      source: "memory" as MemorySource,
+    }));
+  } catch (err) {
+    log.warn(`hmem search failed: ${err}`);
+    return [];
+  }
+}
+
+/**
+ * Read an hmem node by ID. Supports both entry IDs (O0030) and node IDs (O0030.2).
+ * Returns the node content + its direct children for lazy-loading.
+ */
+function readHmemNode(
+  workspaceDir: string,
+  nodeId: string,
+): { text: string; path: string } | null {
+  const db = getHmemDb(workspaceDir);
+  if (!db) return null;
+  try {
+    // Check if it's a root entry ID (no dots) — return entry + L2 children
+    if (!nodeId.includes(".")) {
+      const entry = db
+        .prepare(
+          `SELECT prefix || printf('%04d', seq) as id, title, level_1
+           FROM memories WHERE prefix || printf('%04d', seq) = ?`,
+        )
+        .get(nodeId) as { id: string; title: string; level_1: string } | undefined;
+      if (!entry) return null;
+
+      const children = db
+        .prepare(
+          `SELECT id, content FROM memory_nodes
+           WHERE id LIKE ? AND depth = 2 ORDER BY id`,
+        )
+        .all(`${nodeId}.%`, ) as Array<{ id: string; content: string }>;
+
+      const lines = [`[${entry.id}] ${entry.title}`, entry.level_1];
+      for (const child of children) {
+        const text =
+          child.content.length > 200 ? child.content.substring(0, 200) + "..." : child.content;
+        lines.push(`  [${child.id}] ${text}`);
+      }
+      return { text: lines.join("\n"), path: `hmem:${nodeId}` };
+    }
+
+    // Node ID with dots — read the specific node + direct children
+    const node = db
+      .prepare("SELECT id, content, depth FROM memory_nodes WHERE id = ?")
+      .get(nodeId) as { id: string; content: string; depth: number } | undefined;
+    if (!node) return null;
+
+    const children = db
+      .prepare(
+        `SELECT id, content, depth FROM memory_nodes
+         WHERE id LIKE ? AND depth = ?
+         ORDER BY id`,
+      )
+      .all(`${nodeId}.%`, node.depth + 1) as Array<{
+      id: string;
+      content: string;
+      depth: number;
+    }>;
+
+    const lines = [`[${node.id}] ${node.content}`];
+    for (const child of children) {
+      const text =
+        child.content.length > 200 ? child.content.substring(0, 200) + "..." : child.content;
+      lines.push(`  [${child.id}] ${text}`);
+    }
+    return { text: lines.join("\n"), path: `hmem:${nodeId}` };
+  } catch (err) {
+    log.warn(`hmem readNode failed: ${err}`);
+    return null;
+  }
+}
 
 export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements MemorySearchManager {
   private readonly cacheKey: string;
@@ -234,7 +393,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     if (!this.provider) {
       if (!this.fts.enabled || !this.fts.available) {
         log.warn("memory search: no provider and FTS unavailable");
-        return [];
+        // Fall through to hmem-only search below
+        return this.mergeWithHmem([], cleaned, maxResults);
       }
 
       // Extract keywords for better FTS matching on conversational queries
@@ -263,7 +423,7 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
         .filter((entry) => entry.score >= minScore)
         .slice(0, maxResults);
 
-      return merged;
+      return this.mergeWithHmem(merged, cleaned, maxResults);
     }
 
     const keywordResults = hybrid.enabled
@@ -277,7 +437,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       : [];
 
     if (!hybrid.enabled) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const results = vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      return this.mergeWithHmem(results, cleaned, maxResults);
     }
 
     const merged = await this.mergeHybridResults({
@@ -289,7 +450,29 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       temporalDecay: hybrid.temporalDecay,
     });
 
-    return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    const results = merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    return this.mergeWithHmem(results, cleaned, maxResults);
+  }
+
+  /**
+   * Merge normal search results with hmem knowledge base results.
+   * hmem results fill remaining slots after normal results.
+   */
+  private mergeWithHmem(
+    normalResults: MemorySearchResult[],
+    query: string,
+    maxResults: number,
+  ): MemorySearchResult[] {
+    const hmemSlots = Math.max(3, maxResults - normalResults.length);
+    const hmemResults = searchHmem(this.workspaceDir, query, hmemSlots);
+    if (hmemResults.length === 0) return normalResults;
+    // Deduplicate by snippet prefix (hmem results have unique node IDs in snippet)
+    const combined = [...normalResults];
+    for (const hr of hmemResults) {
+      if (combined.length >= maxResults) break;
+      combined.push(hr);
+    }
+    return combined;
   }
 
   private async searchVector(
@@ -402,6 +585,11 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     const rawPath = params.relPath.trim();
     if (!rawPath) {
       throw new Error("path required");
+    }
+    // Check if path is an hmem node ID (e.g. O0030, O0030.2, E0006.1)
+    if (/^[A-Z]\d{4}(\.\d+)*$/.test(rawPath)) {
+      const hmemResult = readHmemNode(this.workspaceDir, rawPath);
+      if (hmemResult) return hmemResult;
     }
     const absPath = path.isAbsolute(rawPath)
       ? path.resolve(rawPath)

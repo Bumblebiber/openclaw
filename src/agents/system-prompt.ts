@@ -1,4 +1,7 @@
 import { createHmac, createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import fsSync from "node:fs";
+import path from "node:path";
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
@@ -34,10 +37,47 @@ function buildSkillsSection(params: { skillsPrompt?: string; readToolName: strin
   ];
 }
 
+function loadHmemTitles(workspaceDir?: string): string[] {
+  if (!workspaceDir) return [];
+  try {
+    const hmemPath = path.resolve(workspaceDir, "OPENCLAW.hmem");
+    if (!fsSync.existsSync(hmemPath)) return [];
+    const db = new DatabaseSync(hmemPath);
+    const count = db
+      .prepare("SELECT COUNT(*) as c FROM memories WHERE (obsolete = 0 OR obsolete IS NULL)")
+      .get() as { c: number };
+    const rows = db
+      .prepare(
+        `SELECT prefix || printf('%04d', seq) as id, title
+         FROM memories WHERE (obsolete = 0 OR obsolete IS NULL)
+         ORDER BY prefix, seq LIMIT 50`,
+      )
+      .all() as Array<{ id: string; title: string }>;
+    db.close();
+    if (rows.length === 0) return [];
+    const lines = [
+      "",
+      `### Knowledge Base (OPENCLAW.hmem — ${count.c} entries)`,
+      "Searchable via memory_search. Use memory_get with entry ID (e.g. O0030) to read details.",
+      "",
+    ];
+    for (const r of rows) {
+      lines.push(`- ${r.id}: ${r.title}`);
+    }
+    if (count.c > 50) {
+      lines.push(`- ... and ${count.c - 50} more (use memory_search to find them)`);
+    }
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
 function buildMemorySection(params: {
   isMinimal: boolean;
   availableTools: Set<string>;
   citationsMode?: MemoryCitationsMode;
+  workspaceDir?: string;
 }) {
   if (params.isMinimal) {
     return [];
@@ -45,9 +85,11 @@ function buildMemorySection(params: {
   if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
     return [];
   }
+  const hmemTitles = loadHmemTitles(params.workspaceDir);
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on the hierarchical memory database; then use memory_get to pull only the needed lines. For hmem node IDs (e.g. O0030), pass the ID directly to memory_get. If low confidence after search, say you checked.",
+    ...hmemTitles,
   ];
   if (params.citationsMode === "off") {
     lines.push(
@@ -394,6 +436,7 @@ export function buildAgentSystemPrompt(params: {
     isMinimal,
     availableTools,
     citationsMode: params.memoryCitationsMode,
+    workspaceDir: params.workspaceDir,
   });
   const docsSection = buildDocsSection({
     docsPath: params.docsPath,
