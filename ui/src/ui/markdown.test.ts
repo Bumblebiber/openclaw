@@ -48,4 +48,14 @@ describe("toSanitizedMarkdownHtml", () => {
     expect(html).not.toContain("javascript:");
     expect(html).not.toContain("src=");
   });
+
+  it("adds a blur class to links that include tail in the url", () => {
+    const html = toSanitizedMarkdownHtml("[tail](https://docs.openclaw.ai/gateway/tailscale)");
+    expect(html).toContain('class="chat-link-tail-blur"');
+  });
+
+  it("does not add blur class to non-tail links", () => {
+    const html = toSanitizedMarkdownHtml("[docs](https://docs.openclaw.ai/web/dashboard)");
+    expect(html).not.toContain('class="chat-link-tail-blur"');
+  });
 });
